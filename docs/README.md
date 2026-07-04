@@ -2,11 +2,11 @@
 
 # DMP
 
-![GitHub Release](https://img.shields.io/github/v/release/miracleEverywhere/dst-management-platform-api)
-![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/miracleEverywhere/dst-management-platform-api/total)
-![GitHub commit activity](https://img.shields.io/github/commit-activity/t/miracleEverywhere/dst-management-platform-api)
-![GitHub License](https://img.shields.io/github/license/miracleEverywhere/dst-management-platform-api)
-![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/miracleEverywhere/dst-management-platform-api)
+![GitHub Release](https://img.shields.io/github/v/release/RuiCoffee/DMP-ARM64)
+![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/RuiCoffee/DMP-ARM64/total)
+![GitHub commit activity](https://img.shields.io/github/commit-activity/t/RuiCoffee/DMP-ARM64)
+![GitHub License](https://img.shields.io/github/license/RuiCoffee/DMP-ARM64)
+![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/RuiCoffee/DMP-ARM64)
 [![CodeWiki](https://img.shields.io/badge/CodeWiki-Ready-orange)](https://codewiki.google/github.com/miracleeverywhere/dst-management-platform-api)
 <div>
     <img src="images/dmp.svg" height="100" alt="DMP"/>
@@ -28,7 +28,7 @@ Welcome all developers to contribute code to improve and extend this project!
 
 Thanks to the following developers for their code contributions to this project.
 
-![https://github.com/miracleEverywhere/dst-management-platform-api/graphs/contributors](https://contrib.rocks/image?repo=miracleEverywhere/dst-management-platform-api)
+![https://github.com/RuiCoffee/DMP-ARM64/graphs/contributors](https://contrib.rocks/image?repo=RuiCoffee/DMP-ARM64)
 
 ---
 

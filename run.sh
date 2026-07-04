@@ -31,7 +31,7 @@ KEY_FILE=""
 USER=$(whoami)
 ExeFile="$HOME/dmp"
 RUN_SH_CMD="$0 $1"
-DMP_GITHUB_HOME_URL="https://github.com/miracleEverywhere/dst-management-platform-api"
+DMP_GITHUB_HOME_URL="https://github.com/RuiCoffee/DMP-ARM64"
 
 cd "$HOME" || exit
 
