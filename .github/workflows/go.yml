@@ -13,10 +13,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2  # 修复: 升级补丁版本，消除 Node.js 20 警告
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v5.3.0  # 修复: 升级补丁版本，消除 Node.js 20 警告
         with:
           go-version: '1.24'
           cache: false
@@ -26,21 +26,26 @@ jobs:
           GOOS: linux
           GOARCH: arm64
           CGO_ENABLED: 0
+          GOPROXY: https://proxy.golang.org,direct
         run: |
-          # 1. 编译 (将原先的 d-mp 修改为 dmp-arm)
-          go build -ldflags '-s -w' -v -o dmp-arm main.go
+          # 1. 强制启用 Go Modules 机制并刷新依赖
+          export GO111MODULE=on
+          go mod tidy
           
-          # 2. 检测文件名配置逻辑
+          # 2. 严谨编译 (修复: 将 main.go 替换为 . 确保编译器能遍历到 app/logs 目录)
+          go build -ldflags '-s -w' -v -o dmp-arm .
+          
+          # 3. 检测文件名配置逻辑
           if [[ -z "${{ env.ASSET_NAME }}" ]]; then
             echo "错误: ASSET_NAME 变量未设置。"
             exit 1
           fi
           
-          # 3. 按照你设置的 ASSET_NAME 进行打包 (将原先打包的 d-mp 修改为 dmp-arm)
+          # 4. 按照设置的 ASSET_NAME 进行打包
           echo "正在打包为: ${{ env.ASSET_NAME }}"
           tar zcf ${{ env.ASSET_NAME }} dmp-arm
           
-          # 4. 验证打包后的文件是否存在
+          # 5. 验证打包后的文件是否存在
           if [ -f "${{ env.ASSET_NAME }}" ]; then
             echo "打包验证成功: ${{ env.ASSET_NAME }} 已生成。"
           else
@@ -49,10 +54,9 @@ jobs:
           fi
 
       - name: Release to GitHub
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2  # 修复: 核心升级，从 v1 升级到 v2，彻底适配 Node.js 24 容器环境
         with:
           draft: false
-          # 使用变量动态指向文件
           files: ${{ env.ASSET_NAME }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
