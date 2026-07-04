@@ -358,6 +358,133 @@ function do_uninstall() {
     echo_green "DMP-ARM64 面板卸载完成！"
 }
 
+# 安装/更新饥荒服务器本体（steamcmd + DST 服务端），改编自 DMP 内置的 manual_install.sh，
+# 主要优化点：
+#   1. 路径统一使用 ${INSTALL_DIR} 而不是 $HOME，避免和面板配置路径不一致
+#      （历史上出现过的"天数/季节识别不到、cluster_token.txt 找不到"就是这类问题）
+#   2. wget 增加重试和超时，安装前检测 box64 是否就绪，给出更明确的失败提示
+#   3. 精简输出（tar 不再逐个文件打印），减少无意义刷屏
+function do_install_game() {
+    require_arm64
+    mkdir -p "${INSTALL_DIR}" 2>/dev/null || true
+
+    local steam_dir="${INSTALL_DIR}/steamcmd"
+    local dst_dir="${INSTALL_DIR}/dst"
+
+    if ! command -v box64 >/dev/null 2>&1; then
+        echo_red "未检测到 box64，ARM 架构下无法运行游戏服务端及 steamcmd。"
+        echo_yellow "请先执行菜单 [6. 安装 / 检测 box64/box86] 安装依赖后再来安装游戏。"
+        return 1
+    fi
+
+    if [[ -d "${dst_dir}" && -n "$(ls -A "${dst_dir}" 2>/dev/null)" ]]; then
+        echo_yellow "检测到 ${dst_dir} 已存在游戏文件。"
+        read -r -p "是否重新安装/更新（steamcmd 会重新拉取，dst 会被校验覆盖，不影响 .klei 存档）？(y/N): " confirm
+        [[ "${confirm,,}" != "y" ]] && return 0
+    fi
+
+    fix_apt_lock
+    echo_cyan "正在安装基础依赖 (screen wget curl)..."
+    apt-get update -y >/dev/null 2>&1
+    apt-get ${APT_OPT} install screen wget curl >/dev/null 2>&1
+
+    echo_cyan "正在下载 steamcmd 安装包..."
+    cd "${INSTALL_DIR}" || return 1
+    rm -f steamcmd_linux.tar.gz
+    if ! wget -q --tries=3 --timeout=20 https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz; then
+        error_exit "steamcmd 安装包下载失败，请检查网络"
+    fi
+
+    rm -rf "${steam_dir}"
+    mkdir -p "${steam_dir}"
+    tar -zxf steamcmd_linux.tar.gz -C "${steam_dir}"
+    rm -f steamcmd_linux.tar.gz
+
+    echo_cyan "正在通过 steamcmd 安装/更新饥荒服务端（首次安装耗时较长，请耐心等待）..."
+    cd "${steam_dir}" || return 1
+    # 首次运行 steamcmd.sh 常常会因为自更新而失败一次，属正常现象，重试一次即可
+    HOME="${INSTALL_DIR}" box64 ./steamcmd.sh +force_install_dir "${dst_dir}" +login anonymous +app_update 343050 validate +quit || true
+    if ! HOME="${INSTALL_DIR}" box64 ./steamcmd.sh +force_install_dir "${dst_dir}" +login anonymous +app_update 343050 validate +quit; then
+        error_exit "饥荒服务端安装失败，请检查上方 steamcmd 输出的错误信息"
+    fi
+
+    rm -rf "${dst_dir}/steamapps/appmanifest_343050.acf"
+
+    cd "${INSTALL_DIR}" || return 1
+    mkdir -p "${dst_dir}/bin/lib32" "${dst_dir}/bin64/lib64"
+    [[ -f "${steam_dir}/linux32/libstdc++.so.6" ]] && cp -f "${steam_dir}/linux32/libstdc++.so.6" "${dst_dir}/bin/lib32/"
+
+    echo_yellow "提示：ARM 架构下没有原生 x86 版本的 libcurl-gnutls.so.4，"
+    echo_yellow "如果游戏启动日志报缺少该库，请自行放置 x86 版本文件到："
+    echo_yellow "  ${dst_dir}/bin/lib32/libcurl-gnutls.so.4"
+    echo_yellow "  ${dst_dir}/bin64/lib64/libcurl-gnutls.so.4"
+
+    # luajit 包装脚本；dmp_files/luajit 资源由 DMP 主程序首次启动时自动释放，
+    # 如果还没启动过面板（菜单 1 通常会自动启动一次），这里会先跳过，不影响默认 64 位模式
+    if [[ -f "${INSTALL_DIR}/dmp_files/luajit/libpreload.so" ]]; then
+        cp -f "${INSTALL_DIR}"/dmp_files/luajit/* "${dst_dir}/bin64/" 2>/dev/null || true
+        cat > "${dst_dir}/bin64/dontstarve_dedicated_server_nullrenderer_x64_luajit" <<-'EOF'
+export LD_PRELOAD=./libpreload.so
+box64 ./dontstarve_dedicated_server_nullrenderer_x64 "$@"
+unset LD_PRELOAD
+EOF
+        chmod --reference="${dst_dir}/bin64/dontstarve_dedicated_server_nullrenderer_x64" \
+            "${dst_dir}/bin64/dontstarve_dedicated_server_nullrenderer_x64_luajit" 2>/dev/null || \
+            chmod +x "${dst_dir}/bin64/dontstarve_dedicated_server_nullrenderer_x64_luajit"
+    else
+        echo_yellow "未找到 dmp_files/luajit 资源（随 DMP 主程序首次启动释放），已跳过 luajit 模式配置，"
+        echo_yellow "不影响默认 64 位模式；如需 luajit 模式，请先执行一次 [11. 启用DMP] 后重新执行本操作。"
+    fi
+
+    echo_green "饥荒服务端安装/更新完成！"
+    echo_yellow "接下来请打开面板网页，在创建/编辑房间时填写你自己的 Klei Cluster Token："
+    echo_yellow "  https://accounts.klei.com/account/game/servers?game=DontStarveTogether"
+
+    check_stale_home_data
+}
+
+# 卸载游戏本体并清理环境：删除 steamcmd、dst 服务端、以及 .klei 下的全部世界存档。
+# 这是破坏性操作，会先停掉所有正在运行的游戏世界（screen 会话），
+# 不影响 DMP 面板本体、账号数据库（这些由 [3. 卸载] 单独管理）。
+function do_uninstall_game() {
+    local dst_dir="${INSTALL_DIR}/dst"
+    local steam_dir="${INSTALL_DIR}/steamcmd"
+    local klei_dir="${INSTALL_DIR}/.klei"
+
+    if [[ ! -d "${dst_dir}" && ! -d "${steam_dir}" && ! -d "${klei_dir}" ]]; then
+        echo_yellow "未检测到已安装的饥荒服务器相关文件，无需清理。"
+        return 0
+    fi
+
+    echo_red "============================================================"
+    echo_red "危险操作：即将永久删除以下内容："
+    echo_red "  ${dst_dir}   （游戏服务端本体）"
+    echo_red "  ${steam_dir} （steamcmd）"
+    echo_red "  ${klei_dir}  （所有世界存档，包括所有房间的地图和游戏进度！）"
+    echo_red "此操作不可恢复！如果还有想保留的存档，请先手动备份 ${klei_dir} 目录再继续！"
+    echo_red "============================================================"
+
+    read -r -p "确认继续吗？请输入大写 YES 继续，其他任意键取消: " confirm
+    if [[ "${confirm}" != "YES" ]]; then
+        echo_yellow "已取消。"
+        return 0
+    fi
+
+    echo_cyan "正在停止所有正在运行的游戏世界..."
+    screen -ls 2>/dev/null | grep -oP '\d+\.DMP_\S+' | while read -r s; do
+        screen -X -S "${s}" quit 2>/dev/null || true
+    done
+    sleep 1
+    pkill -9 -f dontstarve_dedicated_server 2>/dev/null || true
+
+    echo_cyan "正在删除游戏相关文件..."
+    rm -rf "${dst_dir}" "${steam_dir}" "${klei_dir}"
+    rm -f "${INSTALL_DIR}/manual_install.sh" "${INSTALL_DIR}/manual_update.sh"
+
+    echo_green "饥荒服务器及其存档已清理完成。"
+    echo_yellow "提示：DMP 面板本体、账号数据库未受影响，重新执行 [4. 安装饥荒服务器] 即可重新安装游戏。"
+}
+
 function do_install_box() {
     require_arm64
 
@@ -617,7 +744,7 @@ function do_start() {
     elif is_dmp_running; then
         echo_yellow "进程已启动，但暂未检测到 HTTP(S) 服务就绪，可能还在初始化，请稍后手动访问确认。"
     else
-        echo_red "启动失败！请通过选项 [13. 查看DMP日志] 排查原因。"
+        echo_red "启动失败！请通过选项 [15. 查看DMP日志] 排查原因。"
     fi
 }
 
@@ -668,7 +795,7 @@ function do_status() {
         actual_home=$(tr '\0' '\n' < "/proc/${pid}/environ" 2>/dev/null | grep '^HOME=' | cut -d= -f2-)
         if [[ -n "${actual_home}" && "${actual_home}" != "${INSTALL_DIR}" ]]; then
             echo_red "警告：当前运行中的 dmp 进程 HOME=${actual_home}，与安装目录 ${INSTALL_DIR} 不一致！"
-            echo_red "这说明它不是通过本脚本启动的，游戏存档路径可能会错位，建议用 [11. 重启DMP] 重新拉起。"
+            echo_red "这说明它不是通过本脚本启动的，游戏存档路径可能会错位，建议用 [13. 重启DMP] 重新拉起。"
         fi
     else
         echo_red "=== DMP 面板运行状态: 已停止 ==="
@@ -717,20 +844,22 @@ function show_menu() {
     echo_cyan "  1. 安装"
     echo_cyan "  2. 更新"
     echo_cyan "  3. 卸载"
-    echo_cyan "  4. 安装 / 检测 box64/box86"
-    echo_cyan "  5. 卸载 box64/box86"
+    echo_cyan "  4. 安装饥荒服务器"
+    echo_cyan "  5. 卸载饥荒服务器并清理环境"
+    echo_cyan "  6. 安装 / 检测 box64/box86"
+    echo_cyan "  7. 卸载 box64/box86"
     echo_yellow "—————————————— 账号与设置 ——————————————"
-    echo_cyan "  6. 修改账号密码"
-    echo_cyan "  7. 修改面板端口设置"
-    echo_cyan "  8. SSL证书管理"
+    echo_cyan "  8.  修改账号密码"
+    echo_cyan "  9.  修改面板端口设置"
+    echo_cyan "  10. SSL证书管理"
     echo_yellow "—————————————— DMP 进程管理 ——————————————"
-    echo_cyan "  9.  启用DMP"
-    echo_cyan "  10. 停止DMP"
-    echo_cyan "  11. 重启DMP"
-    echo_cyan "  12. 查看DMP状态"
-    echo_cyan "  13. 查看DMP日志"
-    echo_cyan "  14. 启用DMP开机自启"
-    echo_cyan "  15. 关闭DMP开机自启"
+    echo_cyan "  11. 启用DMP"
+    echo_cyan "  12. 停止DMP"
+    echo_cyan "  13. 重启DMP"
+    echo_cyan "  14. 查看DMP状态"
+    echo_cyan "  15. 查看DMP日志"
+    echo_cyan "  16. 启用DMP开机自启"
+    echo_cyan "  17. 关闭DMP开机自启"
     echo_yellow "————————————————————————————————————————"
     echo_cyan "  0. 退出"
 }
@@ -746,29 +875,31 @@ function main() {
 
     while true; do
         show_menu
-        read -r -p "请输入功能序号 [0-15]: " choice
+        read -r -p "请输入功能序号 [0-17]: " choice
         case "${choice}" in
             1)  do_install ;;
             2)  do_update ;;
             3)  do_uninstall ;;
-            4)  do_install_box ;;
-            5)  do_uninstall_box ;;
-            6)  do_reset_pwd ;;
-            7)  do_change_port ;;
-            8)  do_ssl_manage ;;
-            9)  do_start ;;
-            10) do_stop ;;
-            11) do_restart ;;
-            12) do_status ;;
-            13) do_logs ;;
-            14) do_enable_autostart ;;
-            15) do_disable_autostart ;;
+            4)  do_install_game ;;
+            5)  do_uninstall_game ;;
+            6)  do_install_box ;;
+            7)  do_uninstall_box ;;
+            8)  do_reset_pwd ;;
+            9)  do_change_port ;;
+            10) do_ssl_manage ;;
+            11) do_start ;;
+            12) do_stop ;;
+            13) do_restart ;;
+            14) do_status ;;
+            15) do_logs ;;
+            16) do_enable_autostart ;;
+            17) do_disable_autostart ;;
             0)
                 echo_green "已退出，感谢使用。"
                 exit 0
                 ;;
             *)
-                echo_red "输入错误，请输入 0-15 之间的数字"
+                echo_red "输入错误，请输入 0-17 之间的数字"
                 ;;
         esac
         echo ""
