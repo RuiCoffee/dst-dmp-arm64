@@ -1,0 +1,49 @@
+package logs
+
+import (
+	"dst-management-platform-api/database/dao"
+	"dst-management-platform-api/logger"
+	"strings"
+
+	"github.com/gin-gonic/gin"
+)
+
+type Handler struct {
+	userDao        *dao.UserDAO
+	roomDao        *dao.RoomDAO
+	worldDao       *dao.WorldDAO
+	roomSettingDao *dao.RoomSettingDAO
+}
+
+func NewHandler(userDao *dao.UserDAO, roomDao *dao.RoomDAO, worldDao *dao.WorldDAO, roomSettingDao *dao.RoomSettingDAO) *Handler {
+	return &Handler{
+		userDao:        userDao,
+		roomDao:        roomDao,
+		worldDao:       worldDao,
+		roomSettingDao: roomSettingDao,
+	}
+}
+
+func (h *Handler) hasPermission(c *gin.Context, roomID string) bool {
+	role, _ := c.Get("role")
+	username, _ := c.Get("username")
+
+	// 管理员直接返回true
+	if role.(string) == "admin" {
+		return true
+	} else {
+		dbUser, err := h.userDao.GetUserByUsername(username.(string))
+		if err != nil {
+			logger.Logger.Error("查询数据库失败")
+			return false
+		}
+		roomIDs := strings.Split(dbUser.Rooms, ",")
+		for _, id := range roomIDs {
+			if id == roomID {
+				return true
+			}
+		}
+	}
+
+	return false
+}
