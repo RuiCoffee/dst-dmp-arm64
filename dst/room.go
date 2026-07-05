@@ -6,10 +6,8 @@ import (
 	"dst-management-platform-api/utils"
 	"dst-management-platform-api/webhook"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -304,104 +302,6 @@ func (g *Game) sessionInfo() *RoomSessionInfo {
 	return &roomSessionInfo
 }
 
-var sessionClockPattern = regexp.MustCompile(`dmpclock@@(-?\d+)@@(\w+)@@(\w+)@@(-?\d+)`)
-
-// liveSessionInfo 通过向游戏控制台注入一小段 Lua 代码，实时查询当前天数/阶段/季节，
-// 不依赖存档文件，因此不受自动存档间隔影响。
-// 查询本身只是执行一次 print 并读取日志最后几行，耗时在毫秒级，
-// 不会像真正存档那样暂停世界模拟、序列化几 MB 数据写入磁盘，几乎没有额外资源开销。
-// 仅当世界正在运行时才能成功；世界未运行或查询失败时返回 error，
-// 调用方 SessionInfo() 会据此回退为读取存档 meta 文件（sessionInfo()）。
-func (g *Game) liveSessionInfo() (*RoomSessionInfo, error) {
-	if len(g.worldSaveData) == 0 {
-		return nil, fmt.Errorf("未找到世界数据")
-	}
-
-	world := g.worldSaveData[0]
-
-	queryCmd := fmt.Sprintf("screen -S \"%s\" -p 0 -X stuff \"print(string.format(\\\"dmpclock@@%%d@@%%s@@%%s@@%%d\\\", TheWorld.state.cycles, TheWorld.state.phase, TheWorld.state.season, TheWorld.state.elapseddaysinseason))$(printf \\\\r)\"\n", world.screenName)
-	err := utils.BashCMD(queryCmd)
-	if err != nil {
-		return nil, err
-	}
-
-	// 等待命令执行完毕
-	time.Sleep(time.Second * 1)
-
-	logPath := fmt.Sprintf("%s/server_log.txt", world.worldPath)
-	line, err := readLastLineContaining(logPath, "dmpclock@@")
-	if err != nil {
-		return nil, err
-	}
-
-	matches := sessionClockPattern.FindStringSubmatch(line)
-	if matches == nil {
-		return nil, fmt.Errorf("解析实时天数信息失败")
-	}
-
-	cycles, _ := strconv.Atoi(matches[1])
-	elapsedDays, _ := strconv.Atoi(matches[4])
-
-	roomSessionInfo := RoomSessionInfo{
-		Cycles:      cycles,
-		Phase:       matches[2],
-		Season:      matches[3],
-		ElapsedDays: elapsedDays,
-	}
-
-	// 季节长度基本不会变化（只有修改世界设置才会变），继续沿用存档快照里的数据即可，
-	// 没必要为这部分不常变的数据也额外查询解析
-	roomSessionInfo.SeasonLength = g.sessionInfo().SeasonLength
-
-	return &roomSessionInfo, nil
-}
-
-// readLastLineContaining 反向读取文件末尾（默认最后 4KB），返回最后一行包含 keyword 的内容。
-// 只读文件尾部而不是整个文件，避免随着 server_log.txt 越来越大导致查询变慢。
-func readLastLineContaining(filePath string, keyword string) (string, error) {
-	const bufferSize = 1024 * 4 // 4KB
-
-	file, err := os.Open(filePath)
-	if err != nil {
-		return "", err
-	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
-
-	fileInfo, err := file.Stat()
-	if err != nil {
-		return "", err
-	}
-	fileSize := fileInfo.Size()
-
-	startPos := fileSize - bufferSize
-	if startPos < 0 {
-		startPos = 0
-	}
-
-	_, err = file.Seek(startPos, 0)
-	if err != nil {
-		return "", err
-	}
-
-	buffer := make([]byte, bufferSize)
-	n, err := file.Read(buffer)
-	if err != nil && err != io.EOF {
-		return "", err
-	}
-
-	content := string(buffer[:n])
-	lines := strings.Split(content, "\n")
-
-	for i := len(lines) - 1; i >= 0; i-- {
-		if strings.Contains(lines[i], keyword) {
-			return lines[i], nil
-		}
-	}
-
-	return "", fmt.Errorf("未找到关键字：%s", keyword)
-}
 type SaveJson struct {
 	Room        models.Room        `json:"room"`
 	Worlds      []models.World     `json:"worlds"`
